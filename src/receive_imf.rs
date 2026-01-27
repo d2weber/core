@@ -1700,8 +1700,9 @@ async fn add_parts(
 
     let mut group_changes = match chat.typ {
         _ if chat.id.is_special() => GroupChangesInfo::default(),
-        Chattype::Single => GroupChangesInfo::default(),
-        Chattype::Mailinglist => GroupChangesInfo::default(),
+        Chattype::Single | Chattype::Mailinglist | Chattype::BlindGroup => {
+            GroupChangesInfo::default()
+        }
         Chattype::OutBroadcast => {
             apply_out_broadcast_changes(context, mime_parser, &mut chat, from_id).await?
         }

@@ -99,7 +99,9 @@ pub async fn get_securejoin_qr(context: &Context, chat: Option<ChatId>) -> Resul
         Some(id) => {
             let chat = Chat::load_from_db(context, id).await?;
             ensure!(
-                chat.typ == Chattype::Group || chat.typ == Chattype::OutBroadcast,
+                chat.typ == Chattype::Group
+                    || chat.typ == Chattype::OutBroadcast
+                    || chat.typ == Chattype::BlindGroup,
                 "Can't generate SecureJoin QR code for chat {id} of type {}",
                 chat.typ
             );

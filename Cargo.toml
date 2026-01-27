@@ -133,6 +133,7 @@ members = [
   "deltachat-jsonrpc",
   "deltachat-rpc-server",
   "deltachat-ratelimit",
+  "deltachat-relay-bot",
   "deltachat-repl",
   "deltachat-time",
   "format-flowed",
@@ -204,6 +205,7 @@ thiserror = "2"
 tokio = "1"
 tokio-util = "0.7.17"
 tracing-subscriber = "0.3"
+tracing-journald = "0.3"
 yerpc = "0.6.4"
 
 [features]

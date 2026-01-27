@@ -360,7 +360,7 @@ impl ChatId {
         let mut delete = false;
 
         match chat.typ {
-            Chattype::OutBroadcast => {
+            Chattype::OutBroadcast | Chattype::BlindGroup => {
                 bail!("Can't block chat of type {:?}", chat.typ)
             }
             Chattype::Single => {
@@ -434,7 +434,11 @@ impl ChatId {
         let chat = Chat::load_from_db(context, self).await?;
 
         match chat.typ {
-            Chattype::Single | Chattype::Group | Chattype::OutBroadcast | Chattype::InBroadcast => {
+            Chattype::Single
+            | Chattype::Group
+            | Chattype::OutBroadcast
+            | Chattype::InBroadcast
+            | Chattype::BlindGroup => {
                 // Previously accepting a chat literally created a chat because unaccepted chats
                 // went to "contact requests" list rather than normal chatlist.
                 // But for groups we use lower origin because users don't always check all members
@@ -1511,7 +1515,10 @@ impl Chat {
     /// The function does not check if the chat type allows editing of concrete elements.
     pub async fn is_self_in_chat(&self, context: &Context) -> Result<bool> {
         match self.typ {
-            Chattype::Single | Chattype::OutBroadcast | Chattype::Mailinglist => Ok(true),
+            Chattype::Single
+            | Chattype::OutBroadcast
+            | Chattype::Mailinglist
+            | Chattype::BlindGroup => Ok(true),
             Chattype::Group | Chattype::InBroadcast => {
                 is_contact_in_chat(context, self.id, ContactId::SELF).await
             }
@@ -1689,7 +1696,7 @@ impl Chat {
                     !self.grpid.is_empty()
                 }
                 Chattype::Mailinglist => false,
-                Chattype::OutBroadcast | Chattype::InBroadcast => true,
+                Chattype::OutBroadcast | Chattype::InBroadcast | Chattype::BlindGroup => true,
             };
         Ok(is_encrypted)
     }
@@ -2092,7 +2099,8 @@ impl Chat {
             Chattype::OutBroadcast
             | Chattype::InBroadcast
             | Chattype::Group
-            | Chattype::Mailinglist => {
+            | Chattype::Mailinglist
+            | Chattype::BlindGroup => {
                 if !self.grpid.is_empty() {
                     return Ok(Some(SyncId::Grpid(self.grpid.clone())));
                 }
@@ -2762,8 +2770,10 @@ async fn render_mime_message_and_pre_message(
     msg: &mut Message,
     mimefactory: MimeFactory,
 ) -> Result<(Option<RenderedEmail>, RenderedEmail)> {
+    let chat = Chat::load_from_db(context, msg.chat_id).await?;
     let needs_pre_message = msg.viewtype.has_file()
-        && mimefactory.will_be_encrypted() // unencrypted is likely email, we don't want to spam by sending multiple messages
+        && mimefactory.will_be_encrypted()
+        && chat.typ != Chattype::BlindGroup
         && msg
             .get_filebytes(context)
             .await?
@@ -3614,6 +3624,22 @@ pub async fn create_broadcast(context: &Context, chat_name: String) -> Result<Ch
     create_out_broadcast_ex(context, Sync, grpid, chat_name, secret).await
 }
 
+/// Create a blind group chat (relay-style broadcast), fails if name already exists.
+pub async fn create_unique_blind_group(context: &Context, name: String) -> Result<ChatId> {
+    let grpid = create_id();
+    let ts = time();
+    let chat_id = context.sql.transaction(|t| {
+        t.execute("INSERT INTO chats (type, name, grpid, created_timestamp) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM chats WHERE type=? AND name=?)",
+            (Chattype::BlindGroup, &name, &grpid, ts, Chattype::BlindGroup, &name))?;
+        if t.changes() == 0 { return Err(anyhow::anyhow!("Room '{}' already exists", name).into()); }
+        Ok(ChatId::new(t.last_insert_rowid().try_into()?))
+    }).await?;
+    context.emit_msgs_changed_without_ids();
+    chatlist_events::emit_chatlist_changed(context);
+    chatlist_events::emit_chatlist_item_changed(context, chat_id);
+    Ok(chat_id)
+}
+
 const SQL_INSERT_BROADCAST_SECRET: &str =
     "INSERT INTO broadcast_secrets (chat_id, secret) VALUES (?, ?)
     ON CONFLICT(chat_id) DO UPDATE SET secret=excluded.secret";
@@ -3847,7 +3873,9 @@ pub(crate) async fn add_contact_to_chat_ex(
     // this also makes sure, no contacts are added to special or normal chats
     let mut chat = Chat::load_from_db(context, chat_id).await?;
     ensure!(
-        chat.typ == Chattype::Group || (from_handshake && chat.typ == Chattype::OutBroadcast),
+        chat.typ == Chattype::Group
+            || chat.typ == Chattype::BlindGroup
+            || (from_handshake && chat.typ == Chattype::OutBroadcast),
         "{chat_id} is not a group where one can add members",
     );
     ensure!(
@@ -3855,7 +3883,8 @@ pub(crate) async fn add_contact_to_chat_ex(
         "invalid contact_id {contact_id} for adding to group"
     );
     ensure!(
-        chat.typ != Chattype::OutBroadcast || contact_id != ContactId::SELF,
+        (chat.typ != Chattype::OutBroadcast && chat.typ != Chattype::BlindGroup)
+            || contact_id != ContactId::SELF,
         "Cannot add SELF to broadcast channel."
     );
     match chat.is_encrypted(context).await? {
@@ -3908,6 +3937,11 @@ pub(crate) async fn add_contact_to_chat_ex(
     } else {
         // else continue and send status mail
         add_to_chat_contacts_table(context, time(), chat_id, &[contact_id]).await?;
+    }
+    if chat.typ == Chattype::BlindGroup {
+        if let Some(dm_chat) = ChatIdBlocked::lookup_by_contact(context, contact_id).await? {
+            dm_chat.id.accept(context).await.ok();
+        }
     }
     if chat.is_promoted() {
         msg.viewtype = Viewtype::Text;
@@ -4101,7 +4135,7 @@ pub async fn remove_contact_from_chat(
 
     if matches!(
         chat.typ,
-        Chattype::Group | Chattype::OutBroadcast | Chattype::InBroadcast
+        Chattype::Group | Chattype::OutBroadcast | Chattype::InBroadcast | Chattype::BlindGroup
     ) {
         if !chat.is_self_in_chat(context).await? {
             let err_msg = format!(

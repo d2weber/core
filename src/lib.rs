@@ -127,3 +127,6 @@ pub const DCC_MIME_DEBUG: &str = "DCC_MIME_DEBUG";
 mod test_utils;
 #[cfg(test)]
 mod tests;
+
+/// Relay bot utilities for blind group broadcasts
+pub mod relay_bot;

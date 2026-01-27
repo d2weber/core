@@ -1507,11 +1507,8 @@ impl MimeFactory {
         let mut placeholdertext = None;
 
         let send_verified_headers = match chat.typ {
-            Chattype::Single => true,
-            Chattype::Group => true,
-            // Mailinglists and broadcast channels can actually never be verified:
-            Chattype::Mailinglist => false,
-            Chattype::OutBroadcast | Chattype::InBroadcast => false,
+            Chattype::Single | Chattype::Group | Chattype::BlindGroup => true,
+            Chattype::Mailinglist | Chattype::OutBroadcast | Chattype::InBroadcast => false,
         };
 
         if send_verified_headers {
@@ -1543,8 +1540,7 @@ impl MimeFactory {
             }
         }
 
-        if chat.typ == Chattype::Group {
-            // Send group ID unless it is an ad hoc group that has no ID.
+        if chat.typ == Chattype::Group || chat.typ == Chattype::BlindGroup {
             if !chat.grpid.is_empty() {
                 headers.push((
                     "Chat-Group-ID",
@@ -1556,6 +1552,7 @@ impl MimeFactory {
         if chat.typ == Chattype::Group
             || chat.typ == Chattype::OutBroadcast
             || chat.typ == Chattype::InBroadcast
+            || chat.typ == Chattype::BlindGroup
         {
             headers.push((
                 "Chat-Group-Name",
@@ -2073,7 +2070,12 @@ fn should_encrypt_with_broadcast_secret(msg: &Message, chat: &Chat) -> bool {
 }
 
 fn should_hide_recipients(msg: &Message, chat: &Chat) -> bool {
-    should_encrypt_with_broadcast_secret(msg, chat)
+    if chat.typ == Chattype::BlindGroup && msg.param.get_cmd() == SystemMessage::MemberAddedToGroup
+    {
+        return false;
+    }
+    (chat.typ == Chattype::OutBroadcast && should_encrypt_with_broadcast_secret(msg, chat))
+        || chat.typ == Chattype::BlindGroup
 }
 
 fn should_encrypt_symmetrically(msg: &Message, chat: &Chat) -> bool {
@@ -2085,7 +2087,7 @@ fn should_encrypt_symmetrically(msg: &Message, chat: &Chat) -> bool {
 /// rather than all recipients.
 /// This function returns the fingerprint of the recipient the message should be sent to.
 fn must_have_only_one_recipient<'a>(msg: &'a Message, chat: &Chat) -> Option<Result<&'a str>> {
-    if chat.typ == Chattype::OutBroadcast
+    if (chat.typ == Chattype::OutBroadcast || chat.typ == Chattype::BlindGroup)
         && matches!(
             msg.param.get_cmd(),
             SystemMessage::MemberRemovedFromGroup | SystemMessage::MemberAddedToGroup

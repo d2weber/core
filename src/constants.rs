@@ -150,6 +150,7 @@ pub enum Chattype {
     /// because the word "channel" already appears a lot in the code,
     /// which would make it hard to grep for it.
     InBroadcast = 165,
+    BlindGroup = 170,
 }
 
 pub const DC_MSG_ID_DAYMARKER: u32 = 9;
